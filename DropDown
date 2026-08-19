@@ -1,0 +1,312 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  FlatList,
+  Keyboard,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  useWindowDimensions,
+  View,
+  type ListRenderItem,
+  type ViewStyle,
+} from 'react-native';
+
+export type SearchableDropdownOption = {
+  id: string;
+  label: string;
+};
+
+export type SearchableDropdownProps = {
+  label?: string;
+  placeholder?: string;
+  searchPlaceholder?: string;
+  options: SearchableDropdownOption[];
+  value: string | null;
+  onChange: (id: string) => void;
+  disabled?: boolean;
+  emptyText?: string;
+};
+
+type Anchor = { x: number; y: number; width: number; height: number };
+
+const ACCENT = '#2563eb';
+const MENU_MAX = 280;
+const GAP = 6;
+const MARGIN = 12;
+const SEARCH_H = 48;
+const ROW_H = 44;
+const MIN_MENU = SEARCH_H + ROW_H;
+
+export default function SearchableDropdown({
+  label,
+  placeholder = 'Select',
+  searchPlaceholder = 'Search',
+  options,
+  value,
+  onChange,
+  disabled = false,
+  emptyText = 'No results',
+}: SearchableDropdownProps) {
+  const triggerRef = useRef<View>(null);
+  const { width: winW, height: winH } = useWindowDimensions();
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<Anchor | null>(null);
+  const [query, setQuery] = useState('');
+  const [keyboardH, setKeyboardH] = useState(0);
+
+  const selected = options.find(o => o.id === value);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(o => o.label.toLowerCase().includes(q));
+  }, [options, query]);
+
+  useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show = Keyboard.addListener(showEvt, e => {
+      setKeyboardH(e.endCoordinates.height);
+    });
+    const hide = Keyboard.addListener(hideEvt, () => setKeyboardH(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setQuery('');
+    Keyboard.dismiss();
+  }, []);
+
+  const openMenu = useCallback(() => {
+    if (disabled) return;
+    triggerRef.current?.measureInWindow((x, y, width, height) => {
+      setAnchor({ x, y, width, height });
+      setQuery('');
+      setOpen(true);
+    });
+  }, [disabled]);
+
+  const onSelect = useCallback(
+    (id: string) => {
+      onChange(id);
+      close();
+    },
+    [onChange, close],
+  );
+
+  const menuLayout = useMemo(() => {
+    if (!anchor) return null;
+    const visibleBottom = winH - keyboardH - MARGIN;
+    const belowTop = anchor.y + anchor.height + GAP;
+    const spaceBelow = visibleBottom - belowTop;
+    const spaceAbove = anchor.y - GAP - MARGIN;
+    const openUp = spaceBelow < MIN_MENU + 24 && spaceAbove > spaceBelow;
+    const maxHeight = Math.min(
+      MENU_MAX,
+      Math.max(MIN_MENU, openUp ? spaceAbove : spaceBelow),
+    );
+    const contentH = SEARCH_H + Math.max(filtered.length, 1) * ROW_H;
+    const height = Math.min(maxHeight, contentH);
+    const width = Math.min(anchor.width, winW - MARGIN * 2);
+    const left = Math.min(Math.max(MARGIN, anchor.x), winW - width - MARGIN);
+
+    const style: ViewStyle = openUp
+      ? {
+          position: 'absolute',
+          left,
+          width,
+          height,
+          bottom: winH - anchor.y + GAP,
+        }
+      : {
+          position: 'absolute',
+          left,
+          width,
+          height,
+          top: belowTop,
+        };
+
+    return { style, listHeight: Math.max(ROW_H, height - SEARCH_H) };
+  }, [anchor, filtered.length, keyboardH, winH, winW]);
+
+  const renderItem: ListRenderItem<SearchableDropdownOption> = useCallback(
+    ({ item }) => {
+      const active = item.id === value;
+      return (
+        <Pressable
+          onPress={() => onSelect(item.id)}
+          style={({ pressed }) => [styles.item, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityState={{ selected: active }}>
+          <Text
+            style={[styles.itemText, active && styles.itemTextActive]}
+            numberOfLines={1}>
+            {item.label}
+          </Text>
+          {active ? <Text style={styles.check}>{'\u2713'}</Text> : null}
+        </Pressable>
+      );
+    },
+    [onSelect, value],
+  );
+
+  return (
+    <View style={styles.wrap}>
+      {label ? <Text style={styles.label}>{label}</Text> : null}
+      <View
+        ref={triggerRef}
+        collapsable={false}
+        style={[styles.trigger, disabled && styles.triggerDisabled]}>
+        <Pressable
+          onPress={openMenu}
+          disabled={disabled}
+          style={styles.triggerPress}
+          accessibilityRole="button"
+          accessibilityState={{ disabled, expanded: open }}>
+          <Text
+            style={[styles.triggerText, !selected && styles.placeholder]}
+            numberOfLines={1}>
+            {selected?.label ?? placeholder}
+          </Text>
+          <Text style={styles.chevron}>{open ? '\u25B4' : '\u25BE'}</Text>
+        </Pressable>
+      </View>
+
+      <Modal
+        visible={open}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+        onRequestClose={close}>
+        <View style={styles.modalRoot} pointerEvents="box-none">
+          <Pressable
+            style={styles.backdrop}
+            onPress={close}
+            accessibilityLabel="Close dropdown"
+          />
+          {menuLayout ? (
+            <View style={[styles.menu, menuLayout.style]}>
+              <View style={styles.searchRow}>
+                <TextInput
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder={searchPlaceholder}
+                  placeholderTextColor="#94a3b8"
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                  autoFocus
+                  style={styles.searchInput}
+                  returnKeyType="search"
+                  clearButtonMode="while-editing"
+                />
+              </View>
+              <FlatList
+                data={filtered}
+                keyExtractor={item => item.id}
+                renderItem={renderItem}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
+                nestedScrollEnabled
+                removeClippedSubviews={false}
+                style={{ height: menuLayout.listHeight }}
+                ListEmptyComponent={
+                  <View style={styles.empty}>
+                    <Text style={styles.emptyText}>{emptyText}</Text>
+                  </View>
+                }
+              />
+            </View>
+          ) : null}
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: { zIndex: 1 },
+  label: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 8,
+  },
+  trigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    minHeight: 48,
+  },
+  triggerDisabled: { opacity: 0.5 },
+  triggerPress: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  triggerText: { flex: 1, fontSize: 16, color: '#0f172a' },
+  placeholder: { color: '#94a3b8' },
+  chevron: { fontSize: 12, color: '#64748b', marginLeft: 8 },
+  modalRoot: { flex: 1 },
+  backdrop: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(15, 23, 42, 0.18)',
+  },
+  menu: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    overflow: 'hidden',
+    elevation: 12,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  searchRow: {
+    height: SEARCH_H,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e2e8f0',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  searchInput: {
+    fontSize: 15,
+    color: '#0f172a',
+    paddingVertical: Platform.OS === 'ios' ? 8 : 6,
+  },
+  item: {
+    height: ROW_H,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+  },
+  pressed: { backgroundColor: '#f1f5f9' },
+  itemText: { flex: 1, fontSize: 15, color: '#0f172a' },
+  itemTextActive: { color: ACCENT, fontWeight: '700' },
+  check: { fontSize: 14, fontWeight: '700', color: ACCENT, marginLeft: 8 },
+  empty: {
+    height: ROW_H,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+  },
+  emptyText: { fontSize: 14, color: '#94a3b8' },
+});
